@@ -1,0 +1,708 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG, A to Z &middot; Learning Notes</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+</head>
+<body class="topic-rag">
+
+<header class="hero">
+  <div class="kicker"><a href="index.html">&larr; Learning Notes</a> &nbsp;/&nbsp; Retrieval-Augmented Generation</div>
+  <h1 class="title">RAG, <span class="em">A to Z</span></h1>
+  <p class="lede">One page that teaches the whole thing: how RAG works, every technique that makes it good, the internals under the buzzwords, and how to measure whether it actually works.</p>
+</header>
+
+<div class="shell">
+  <nav class="toc collapsed" id="toc">
+    <div class="toc-head" id="tocHead">Contents</div>
+    <ol>
+      <li><a href="#intro">About this page</a></li>
+    </ol>
+    <div class="grp">Part 0 &middot; Foundations</div>
+    <ol>
+      <li><a href="#f1">What RAG is &amp; why</a></li>
+      <li><a href="#f2">The pipeline: two phases</a></li>
+      <li><a href="#f3">Sparse vs dense vectors</a></li>
+      <li><a href="#f4">Embeddings &amp; distance</a></li>
+      <li><a href="#f5">Encoders: bi vs cross</a></li>
+    </ol>
+    <div class="grp">Part 1 &middot; Indexing</div>
+    <ol>
+      <li><a href="#i1">Chunking</a></li>
+      <li><a href="#i2">Embedding models</a></li>
+      <li><a href="#i3">The index: kNN to HNSW</a></li>
+      <li><a href="#i4">Vector databases</a></li>
+      <li><a href="#i5">Advanced indexing</a></li>
+    </ol>
+    <div class="grp">Part 2 &middot; Retrieval</div>
+    <ol>
+      <li><a href="#r1">Similarity search &amp; top-k</a></li>
+      <li><a href="#r2">Query translation</a></li>
+      <li><a href="#r3">Routing</a></li>
+      <li><a href="#r4">Query construction</a></li>
+      <li><a href="#r5">Hybrid search</a></li>
+      <li><a href="#r6">Reranking &amp; multi-stage</a></li>
+    </ol>
+    <div class="grp">Part 3 &middot; Augmentation</div>
+    <ol>
+      <li><a href="#a1">Building the prompt</a></li>
+    </ol>
+    <div class="grp">Part 4 &middot; Generation</div>
+    <ol>
+      <li><a href="#g1">The generation step</a></li>
+      <li><a href="#g2">Self-correcting flows</a></li>
+    </ol>
+    <div class="grp">Part 5 &middot; Tooling</div>
+    <ol>
+      <li><a href="#t1">Frameworks</a></li>
+    </ol>
+    <div class="grp">Part 6 &middot; Evaluation</div>
+    <ol>
+      <li><a href="#e1">Why &amp; how to test</a></li>
+      <li><a href="#e2">Retrieval metrics</a></li>
+      <li><a href="#e3">Generation metrics</a></li>
+      <li><a href="#e4">Tools &amp; ranx</a></li>
+    </ol>
+    <div class="grp">Part 7 &middot; Perspective</div>
+    <ol>
+      <li><a href="#p1">Long context vs RAG</a></li>
+      <li><a href="#x1">Cheat sheet</a></li>
+      <li><a href="#src">Sources</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+  <!-- ============ INTRO ============ -->
+  <section id="intro">
+    <h2>About this page</h2>
+    <p>This is a single, self-contained course on Retrieval-Augmented Generation, built to be learned from front to back. It starts with the vocabulary you need (vectors, embeddings, encoders), walks through the four phases of a RAG system in the order data actually flows through them, <strong>indexing &rarr; retrieval &rarr; augmentation &rarr; generation</strong>, and then layers on the advanced techniques that separate a toy demo from a production system. It ends with how to measure quality, because a RAG system you cannot evaluate is one you cannot improve.</p>
+    <p>Two reading aids throughout: code blocks show the real shape of each idea, and any term that is useful background but not core RAG (like <span class="def" tabindex="0">k-means clustering<span class="bubble"><span class="label">definition</span>A way to group unlabeled points into <b>k</b> clusters. Pick k center points, assign each point to its nearest center, move each center to the average of its members, repeat until stable. RAG uses it inside IVF indexes to carve vectors into searchable groups.</span></span>) is dotted, so you can hover or tap it for a quick definition without losing your place.</p>
+  </section>
+
+  <!-- ============ PART 0: FOUNDATIONS ============ -->
+  <section id="f1">
+    <p class="part-label">Part 0 &middot; Foundations</p>
+    <h2>What RAG is, and why it exists</h2>
+    <p>A large language model knows only what was in its training data, frozen when training stopped. It cannot know your company's docs, last week's news, or a PDF you uploaded a minute ago. Ask anyway and it tends to guess confidently, sometimes inventing facts. That guessing is called <strong>hallucination</strong>.</p>
+    <p>RAG adds a retrieval step <em>before</em> generation. Rather than answering from memory, the system <strong>retrieves</strong> relevant text from a knowledge base you control, <strong>augments</strong> the question by pasting that text into the prompt, and <strong>generates</strong> an answer grounded in it. The payoff: answers based on evidence you own, far less hallucination, and the ability to use information the model never trained on, all without the cost of retraining.</p>
+    <div class="note">
+      <span class="tag">One-line mental model</span>
+      <p>RAG is an <strong>open-book exam</strong> for an LLM. Fine-tuning is studying harder before the exam. RAG hands the model the right page at exam time.</p>
+    </div>
+  </section>
+
+  <section id="f2">
+    <h2>The pipeline: two phases</h2>
+    <p>Keep these two phases separate in your head. <strong>Indexing</strong> is offline prep, done once or whenever data changes. <strong>Querying</strong> is what runs live on every question. Every technique in this course lives in one of these boxes.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 270" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="RAG pipeline diagram">
+        <text x="12" y="22" class="dg-label-accent">PHASE 1 &mdash; INDEXING (offline)</text>
+        <rect x="12" y="34" width="120" height="46" rx="8" class="dg-node"/>
+        <text x="72" y="62" text-anchor="middle" class="dg-label-sm">documents</text>
+        <path d="M138 57 H170" class="dg-line" marker-end="url(#ar)"/>
+        <rect x="176" y="34" width="110" height="46" rx="8" class="dg-node"/>
+        <text x="231" y="62" text-anchor="middle" class="dg-label-sm">chunks</text>
+        <path d="M292 57 H324" class="dg-line" marker-end="url(#ar)"/>
+        <rect x="330" y="34" width="120" height="46" rx="8" class="dg-node"/>
+        <text x="390" y="56" text-anchor="middle" class="dg-label-sm">embed each</text>
+        <text x="390" y="70" text-anchor="middle" class="dg-label-sm">&rarr; vectors</text>
+        <path d="M456 57 H488" class="dg-line" marker-end="url(#ar)"/>
+        <rect x="494" y="34" width="120" height="46" rx="8" class="dg-accent-soft"/>
+        <text x="554" y="62" text-anchor="middle" class="dg-label-sm">vector index</text>
+
+        <text x="12" y="140" class="dg-label-accent">PHASE 2 &mdash; QUERYING (live)</text>
+        <rect x="12" y="152" width="120" height="46" rx="8" class="dg-node"/>
+        <text x="72" y="180" text-anchor="middle" class="dg-label-sm">question</text>
+        <path d="M138 175 H170" class="dg-line" marker-end="url(#ar)"/>
+        <rect x="176" y="152" width="110" height="46" rx="8" class="dg-node"/>
+        <text x="231" y="180" text-anchor="middle" class="dg-label-sm">embed</text>
+        <path d="M292 175 H324" class="dg-line" marker-end="url(#ar)"/>
+        <rect x="330" y="152" width="120" height="46" rx="8" class="dg-accent-soft"/>
+        <text x="390" y="174" text-anchor="middle" class="dg-label-sm">search index</text>
+        <text x="390" y="188" text-anchor="middle" class="dg-label-sm">top-k chunks</text>
+        <path d="M456 175 H488" class="dg-line" marker-end="url(#ar)"/>
+        <rect x="494" y="152" width="120" height="46" rx="8" class="dg-node"/>
+        <text x="554" y="174" text-anchor="middle" class="dg-label-sm">prompt +</text>
+        <text x="554" y="188" text-anchor="middle" class="dg-label-sm">LLM &rarr; answer</text>
+        <path d="M554 80 V152" class="dg-dash"/>
+        <text x="566" y="120" class="dg-label-sm">index is reused</text>
+        <defs>
+          <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+            <path d="M0 0 L9 4.5 L0 9 z" fill="var(--ink-soft)"/>
+          </marker>
+        </defs>
+      </svg>
+      <figcaption>Indexing builds the searchable store once; querying reuses it on every question.</figcaption>
+    </figure>
+  </section>
+
+  <section id="f3">
+    <h2>Sparse vs dense vectors</h2>
+    <p>Both turn text into numbers, but in opposite ways, and modern RAG uses both.</p>
+    <p>A <span class="lead-term">sparse vector</span> is the old, keyword view. Imagine one slot per word in a huge vocabulary; a document's vector is mostly zeros, with non-zero values only at the words it actually contains (hence <em>sparse</em>). Statistical schemes like <span class="def" tabindex="0">BM25<span class="bubble"><span class="label">definition</span><b>Best Matching 25.</b> The classic keyword ranking function behind search engines. Scores a document by how often the query words appear, weighting rare words more, with diminishing returns for repeats and a length penalty. Matches literal words, not meaning.</span></span> score relevance by exact word overlap. Strength: nails exact terms (a part number, a name, an error code). Weakness: no idea that "cancel" and "terminate" are related.</p>
+    <p>A <span class="lead-term">dense vector</span> is the learned, semantic view: a fixed-length list (say 1,536 numbers) where almost every slot is filled, produced by a neural embedding model. Texts with similar <em>meaning</em> land near each other even with no shared words. Strength: understands paraphrase and synonyms. Weakness: can blur a precise string into a fuzzy neighborhood and miss an exact match.</p>
+    <div class="note">
+      <span class="tag">Why it matters</span>
+      <p>This sparse/dense split is the whole reason <strong>hybrid search</strong> (Part 2.5) exists: run both and merge, so you get exact-term precision <em>and</em> semantic understanding.</p>
+    </div>
+  </section>
+
+  <section id="f4">
+    <h2>Embeddings &amp; distance metrics</h2>
+    <p>An <strong>embedding model</strong> converts text into a dense vector whose position encodes meaning. So "How do I cancel my subscription?" lands near a doc titled "Account Termination Policy" despite sharing almost no words. That is semantic search, and it is what lets RAG find relevant text keyword matching would miss.</p>
+    <p>Once text is a vector, similarity becomes distance. The common metrics:</p>
+    <ul>
+      <li><span class="def" tabindex="0">Cosine similarity<span class="bubble"><span class="label">definition</span>Measures the <b>angle</b> between two vectors, ignoring their length. 1 means same direction (most similar), 0 means unrelated. The default for text embeddings.</span></span>: angle between vectors, ignoring length. The default for text.</li>
+      <li><strong>Euclidean (L2) distance</strong>: straight-line distance between the points. Smaller is more similar.</li>
+      <li><strong>Dot product</strong>: fast, and equal to cosine when vectors are normalized.</li>
+    </ul>
+    <pre data-lang="python"><code class="language-python">from openai import OpenAI
+client = OpenAI()
+
+def embed(text: str) -> list[float]:
+    r = client.embeddings.create(model="text-embedding-3-small", input=text)
+    return r.data[0].embedding
+
+vec = embed("How do I cancel my subscription?")
+print(len(vec))   # 1536 numbers &mdash; the unit of currency for the rest of RAG</code></pre>
+  </section>
+
+  <section id="f5">
+    <h2>Encoders: bi-encoder vs cross-encoder</h2>
+    <p>This distinction explains both why fast retrieval is imprecise and why reranking works, so it is worth getting straight early.</p>
+    <p>A <span class="lead-term">bi-encoder</span> (a "two-tower" model) encodes the query and each document <em>separately</em> into one vector each, then compares the finished vectors with cosine similarity. Because documents can be embedded ahead of time and stored, this is extremely fast and scales to millions of items. The cost: the model never sees the query and document together, so it judges relevance only through two independently-made summaries. Ordinary embedding search is a bi-encoder.</p>
+    <p>A <span class="lead-term">cross-encoder</span> feeds the query and one document <em>together</em> into a single model that reads them jointly and outputs one relevance score. This is far more accurate because the model can attend to how the two texts actually relate, but it cannot precompute anything: every query-document pair is a fresh forward pass. Running it over millions of documents is hopeless. So cross-encoders are used as a second-stage reranker over a shortlist (Part 2.6), not as the first retriever.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Bi-encoder versus cross-encoder">
+        <text x="12" y="20" class="dg-label-accent">BI-ENCODER &mdash; fast, less precise</text>
+        <rect x="20" y="38" width="90" height="40" rx="8" class="dg-node"/><text x="65" y="63" text-anchor="middle" class="dg-label-sm">query</text>
+        <rect x="20" y="120" width="90" height="40" rx="8" class="dg-node"/><text x="65" y="145" text-anchor="middle" class="dg-label-sm">document</text>
+        <rect x="140" y="38" width="80" height="40" rx="8" class="dg-node-soft"/><text x="180" y="63" text-anchor="middle" class="dg-label-sm">encoder</text>
+        <rect x="140" y="120" width="80" height="40" rx="8" class="dg-node-soft"/><text x="180" y="145" text-anchor="middle" class="dg-label-sm">encoder</text>
+        <path d="M110 58 H140" class="dg-line" marker-end="url(#ar2)"/>
+        <path d="M110 140 H140" class="dg-line" marker-end="url(#ar2)"/>
+        <circle cx="252" cy="58" r="9" class="dg-dot-accent"/><circle cx="252" cy="140" r="9" class="dg-dot-accent"/>
+        <path d="M220 58 H243" class="dg-line" marker-end="url(#ar2)"/>
+        <path d="M220 140 H243" class="dg-line" marker-end="url(#ar2)"/>
+        <path d="M261 64 L286 96 M261 134 L286 102" class="dg-line-accent"/>
+        <text x="296" y="103" class="dg-label-sm">cosine</text>
+
+        <text x="400" y="20" class="dg-label-accent">CROSS-ENCODER &mdash; slow, precise</text>
+        <rect x="408" y="60" width="90" height="40" rx="8" class="dg-node"/><text x="453" y="85" text-anchor="middle" class="dg-label-sm">query</text>
+        <rect x="408" y="116" width="90" height="40" rx="8" class="dg-node"/><text x="453" y="141" text-anchor="middle" class="dg-label-sm">document</text>
+        <path d="M498 80 H528" class="dg-line" marker-end="url(#ar2)"/>
+        <path d="M498 136 H528" class="dg-line" marker-end="url(#ar2)"/>
+        <rect x="528" y="74" width="100" height="68" rx="8" class="dg-accent-soft"/>
+        <text x="578" y="104" text-anchor="middle" class="dg-label-sm">one model,</text>
+        <text x="578" y="118" text-anchor="middle" class="dg-label-sm">read jointly</text>
+        <path d="M628 108 H656" class="dg-line-accent" marker-end="url(#ar2)"/>
+        <text x="664" y="112" class="dg-label-sm">score</text>
+        <defs>
+          <marker id="ar2" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 z" fill="var(--ink-soft)"/></marker>
+        </defs>
+      </svg>
+      <figcaption>Bi-encoders precompute and compare vectors (scalable). Cross-encoders read pairs together (accurate, not scalable).</figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ PART 1: INDEXING ============ -->
+  <section id="i1">
+    <p class="part-label">Part 1 &middot; Indexing</p>    <h2>Chunking</h2>
+    <p>You do not embed an 80-page PDF as one vector; its meaning would average into mush, and you want to retrieve the relevant paragraph, not the whole book. So you split documents into <strong>chunks</strong> and embed each. Roughly 80% of RAG failures trace back to ingestion and chunking, not the model, so this matters more than beginners expect.</p>
+    <h4>Strategies, simple to advanced</h4>
+    <ol class="body">
+      <li><strong>Fixed-size</strong>: cut every N tokens. Simplest, but splits sentences mid-thought.</li>
+      <li><strong>Recursive character splitting</strong>: the standard default. Splits on paragraph breaks first, then sentences, then words, respecting natural boundaries. Start here.</li>
+      <li><strong>Semantic chunking</strong>: split where the topic shifts, detected via embedding similarity. Higher quality, more cost.</li>
+      <li><strong>Parent-child (small-to-big)</strong>: index small precise chunks for matching, return the larger parent for context.</li>
+    </ol>
+    <p>Solid starting point: recursive chunks of <strong>300 to 500 tokens with 10 to 15% overlap</strong>. Overlap means neighbors share edge text, so a fact on a boundary is not lost.</p>
+    <pre data-lang="python"><code class="language-python">from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500, chunk_overlap=75,
+    separators=["\n\n", "\n", ". ", " ", ""],   # try these split points in order
+)
+chunks = splitter.split_text(open("handbook.txt").read())</code></pre>
+  </section>
+
+  <section id="i2">
+    <h2>Embedding models</h2>
+    <p>Retrieval quality is capped by embedding quality; a small gain here can be the difference between an answer and a hallucination. Common 2026 choices:</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>Model</th><th>Notes</th><th>Dims</th></tr>
+      <tr><td><strong>OpenAI text-embedding-3-small</strong></td><td>Cheap, easy, the standard starting point</td><td>1,536</td></tr>
+      <tr><td><strong>OpenAI text-embedding-3-large</strong></td><td>Stronger general retrieval, safe default</td><td>3,072</td></tr>
+      <tr><td><strong>BGE-M3 / Qwen3-Embedding</strong></td><td>Open-source, no per-token fee, self-host</td><td>1,024+</td></tr>
+      <tr><td><strong>Voyage / Cohere v4 / Gemini</strong></td><td>Specialized: quality, multilingual, multimodal</td><td>varies</td></tr>
+    </table></div>
+    <p>Start hosted, get the pipeline working, then test alternatives on 50 to 200 of your <em>real</em> queries. For most apps 768 to 1,024 dimensions is the sweet spot. A trick called <span class="def" tabindex="0">Matryoshka<span class="bubble"><span class="label">definition</span>Matryoshka Representation Learning packs the most important information into the <b>earliest</b> numbers of a vector, like nesting dolls. So you can truncate a 3,072-dim vector to its first 256 or 1,024 and still get usable results, saving storage with little quality loss.</span></span> representation learning lets you truncate vectors to as few as 256 dimensions with minor quality loss, cutting storage cost.</p>
+  </section>
+
+  <section id="i3">
+    <h2>The index: from kNN to HNSW</h2>
+    <p>After chunking and embedding you have a pile of vectors. An <strong>index</strong> lets you find the stored vectors closest to a query vector quickly. Without one you would compare against every vector, one by one.</p>
+
+    <h3>Exact kNN: the brute-force baseline</h3>
+    <p><span class="def" tabindex="0">k-Nearest Neighbours<span class="bubble"><span class="label">definition</span><b>kNN.</b> Find the k stored items closest to a query. The exact version measures distance to every stored vector and returns the nearest k. Always correct, but slow at scale because it touches everything.</span></span> answers exactly the RAG question: find the k stored vectors closest to the query. The exact method computes distance to <em>every</em> vector, sorts, returns the top k. Here k is just how many chunks you want back. It is perfectly accurate but touches everything, so it grows too slow past a few million vectors.</p>
+    <pre data-lang="python"><code class="language-python">import numpy as np
+def knn(query, store, k=5):                 # exact, brute force
+    q = query / np.linalg.norm(query)
+    M = store / np.linalg.norm(store, axis=1, keepdims=True)
+    sims = M @ q                            # cosine sim to every vector
+    return np.argsort(sims)[::-1][:k]       # indices of the k highest</code></pre>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Nearest neighbour search in embedding space">
+        <rect x="12" y="12" width="340" height="206" rx="10" class="dg-node-soft"/>
+        <text x="24" y="32" class="dg-label-sm">embedding space (documents as points)</text>
+        <circle cx="80" cy="80" r="5" class="dg-dot"/><circle cx="120" cy="150" r="5" class="dg-dot"/>
+        <circle cx="250" cy="60" r="5" class="dg-dot"/><circle cx="300" cy="120" r="5" class="dg-dot"/>
+        <circle cx="90" cy="190" r="5" class="dg-dot"/><circle cx="320" cy="180" r="5" class="dg-dot"/>
+        <circle cx="200" cy="120" r="34" fill="none" class="dg-dash"/>
+        <circle cx="185" cy="105" r="5" class="dg-dot-accent"/><circle cx="220" cy="118" r="5" class="dg-dot-accent"/><circle cx="195" cy="140" r="5" class="dg-dot-accent"/>
+        <path d="M200 120 m-7 -7 l14 14 m0 -14 l-14 14" class="dg-line-accent"/>
+        <text x="200" y="175" text-anchor="middle" class="dg-label-accent">query</text>
+        <text x="372" y="90" class="dg-label">Embed the query into</text>
+        <text x="372" y="110" class="dg-label">the same space, then</text>
+        <text x="372" y="130" class="dg-label">grab the nearest k</text>
+        <text x="372" y="150" class="dg-label">points (the dashed</text>
+        <text x="372" y="170" class="dg-label">neighbourhood).</text>
+      </svg>
+      <figcaption>Retrieval = a neighbourhood search around the query in embedding space.</figcaption>
+    </figure>
+
+    <h3>Approximate NN (ANN): trade a little accuracy for huge speed</h3>
+    <p><strong>ANN</strong> algorithms accept a small, bounded accuracy loss for a 100x to 1000x speedup, returning <em>almost certainly</em> the closest k. Quality is measured by <strong>recall</strong>: of the true top-k, what fraction did you get. Production usually tunes for 95 to 99%. Two dominate:</p>
+
+    <h4>HNSW &mdash; a navigable graph</h4>
+    <p>Picture vectors as cities with roads to nearby neighbours; to find the closest city you greedily drive toward the target. HNSW makes it <em>hierarchical</em>: a sparse top layer with long highways for big jumps, denser lower layers with short local roads for fine detail. Search starts high to cover distance fast, then drops down to refine, so query time grows logarithmically.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HNSW hierarchical layers">
+        <text x="12" y="28" class="dg-label-sm">layer 2 (sparse, long jumps)</text>
+        <circle cx="120" cy="40" r="6" class="dg-dot-accent"/><circle cx="420" cy="40" r="6" class="dg-dot"/>
+        <path d="M126 40 H414" class="dg-line-accent"/>
+        <text x="12" y="118" class="dg-label-sm">layer 1</text>
+        <circle cx="120" cy="130" r="6" class="dg-dot-accent"/><circle cx="270" cy="120" r="6" class="dg-dot-accent"/><circle cx="420" cy="130" r="6" class="dg-dot"/><circle cx="540" cy="120" r="6" class="dg-dot"/>
+        <path d="M125 130 L265 121 M275 120 L415 130" class="dg-line-accent"/><path d="M425 130 L535 121" class="dg-line"/>
+        <text x="12" y="210" class="dg-label-sm">layer 0 (dense, all points)</text>
+        <circle cx="120" cy="220" r="5" class="dg-dot-accent"/><circle cx="195" cy="212" r="5" class="dg-dot"/><circle cx="270" cy="222" r="5" class="dg-dot-accent"/><circle cx="345" cy="214" r="5" class="dg-dot"/><circle cx="420" cy="222" r="5" class="dg-dot"/><circle cx="500" cy="214" r="5" class="dg-dot"/><circle cx="575" cy="222" r="5" class="dg-dot"/>
+        <path d="M120 220 L195 213 L270 222 L345 214 L420 222 L500 214 L575 222" class="dg-line"/>
+        <path d="M120 46 V124 M120 136 V214" class="dg-dash"/><path d="M270 126 V216" class="dg-dash"/>
+        <text x="600" y="44" class="dg-label-sm">enter</text>
+        <text x="600" y="224" class="dg-label-sm">land here</text>
+      </svg>
+      <figcaption>HNSW: descend from a sparse top layer to the dense bottom, refining the search each level.</figcaption>
+    </figure>
+    <p>Knobs: <code>M</code> (neighbours per node; higher = better recall, more memory), <code>ef_construction</code> (build effort), <code>ef_search</code> (query effort). Properties: high recall at low latency, incremental inserts, but memory-hungry (it stores all those edges).</p>
+
+    <h4>IVF &mdash; clustering</h4>
+    <p>IVF runs <span class="def" tabindex="0">k-means clustering<span class="bubble"><span class="label">definition</span>Groups points into k clusters: pick k centers, assign each point to its nearest, move centers to the mean of their members, repeat. IVF uses it to pre-sort vectors into buckets so search only checks the nearest few.</span></span> to split vectors into clusters (say 1,000), each with a centroid. At query time it finds the few nearest centroids and only searches those clusters. Knobs: <code>nlist</code> (number of clusters), <code>nprobe</code> (how many to search). Less memory than HNSW and fast to build, but lower recall and it needs a training pass before inserts.</p>
+
+    <h4>PQ &mdash; compression</h4>
+    <p><strong>Product Quantization</strong> is not a search method but a compression trick, often paired with IVF (<code>IVF-PQ</code>). It splits each vector into sub-vectors and replaces each with a short code from a learned codebook, shrinking memory dramatically at some precision cost. It is a form of <span class="def" tabindex="0">quantization<span class="bubble"><span class="label">definition</span>Storing numbers at lower precision (e.g. mapping many possible values to a small set of codes) to save memory and speed up math, trading a little accuracy.</span></span> used to fit billions of vectors in limited RAM.</p>
+
+    <div class="note">
+      <span class="tag">Which to pick</span>
+      <p><strong>Flat (exact kNN)</strong> for small data or perfect-recall needs &middot; <strong>HNSW</strong> as the production default &middot; <strong>IVF / IVF-PQ</strong> for very large, memory-constrained data. Your vector database implements all of this; you just choose the type and a couple of parameters.</p>
+    </div>
+  </section>
+
+  <section id="i4">
+    <h2>Vector databases</h2>
+    <p>A <strong>vector database</strong> stores embeddings, builds the index automatically, and answers nearest-neighbour queries, usually with metadata filtering on top. The 2026 landscape:</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>Database</th><th>Character</th><th>Best when</th></tr>
+      <tr><td><strong>Chroma</strong></td><td>Dev-friendly, runs locally in one line</td><td>Learning, prototyping, small prod</td></tr>
+      <tr><td><strong>Pinecone</strong></td><td>Fully managed, zero-ops</td><td>You don't want to run infrastructure</td></tr>
+      <tr><td><strong>Qdrant</strong></td><td>Rust, great price/performance, strong filtering</td><td>Cost-effective self-hosting</td></tr>
+      <tr><td><strong>Weaviate</strong></td><td>Native hybrid search, multimodal</td><td>Hybrid keyword+vector in one query</td></tr>
+      <tr><td><strong>Milvus</strong></td><td>Enterprise, distributed, scales to billions</td><td>Very large deployments</td></tr>
+      <tr><td><strong>pgvector</strong></td><td>Vector search inside PostgreSQL</td><td>You already run Postgres, &lt;~100M vectors</td></tr>
+    </table></div>
+    <pre data-lang="python"><code class="language-python">import chromadb
+client = chromadb.Client()                      # in-memory; PersistentClient to save
+col = client.create_collection("docs")
+col.add(documents=["The capital of France is Paris.",
+                   "Photosynthesis converts sunlight into energy."],
+        ids=["d1", "d2"])
+col.query(query_texts=["What is the capital of France?"], n_results=2)  # n_results = your k</code></pre>
+    <p>For learning, start with Chroma; you can swap later with little code change, which is one thing frameworks help with.</p>
+  </section>
+
+  <section id="i5">
+    <h2>Advanced indexing</h2>
+
+    <h3>Multi-representation indexing</h3>
+    <p>Decouple <em>what you search</em> from <em>what you return</em>. Use an LLM to write a summary (a "proposition") of each document, embed the <em>summary</em> for retrieval, but store the <em>full document</em> separately, linked by ID. A match on a summary returns the whole document for generation, giving precise retrieval plus full context. The related parent-document retriever (match small chunks, return their parent) is the same family and a common default.</p>
+    <pre data-lang="python"><code class="language-python"># summaries -> vector store (search), full docs -> doc store (return)
+retriever = MultiVectorRetriever(vectorstore=summary_store,
+                                 docstore=full_doc_store, id_key="doc_id")</code></pre>
+
+    <h3>RAPTOR (hierarchical indexing)</h3>
+    <p>Some questions need a single chunk; others need information consolidated across many. RAPTOR builds a <strong>tree of summaries</strong>: documents are leaves, cluster and summarize them, then cluster and summarize those summaries, recursively, up to one root summary. Index every level together. High-level questions match summary nodes; detailed ones match leaves, so you get coverage across the whole abstraction hierarchy. Its louder cousin now is <strong>GraphRAG</strong>, which builds an explicit knowledge graph for the same cross-document need.</p>
+
+    <h3>ColBERT &amp; late interaction</h3>
+    <p>Distinct from cross-encoder reranking. Standard embedding squashes a whole document into one vector. ColBERT instead keeps a vector per <em>token</em>. At query time, for each query token it finds the most similar document token (the <span class="def" tabindex="0">MaxSim<span class="bubble"><span class="label">definition</span>ColBERT's scoring step: for each query token, take the maximum similarity against all document tokens, then sum those maxima. "For each part of the query, how strong is the best evidence in this doc?"</span></span> operation) and sums those maxima. Because query and document are still encoded independently and only interact through this cheap token step, you get near cross-encoder accuracy at near bi-encoder speed. ColBERTv2 + PLAID cut its old storage penalty 6 to 10x; ModernColBERT and ColPali/ColQwen extend it, including to document images.</p>
+    <pre data-lang="python"><code class="language-python">from ragatouille import RAGPretrainedModel
+rag = RAGPretrainedModel.from_pretrained("colbert-ir/colbertv2.0")
+rag.index(collection=[d.page_content for d in documents], index_name="my_index")
+results = rag.search(query="SSO configuration", k=5)</code></pre>
+    <div class="status"><span class="tag">2026 status</span><p>All three are current. Multi-representation gets more attractive as context windows grow; RAPTOR and GraphRAG own the cross-document case; late interaction is thriving and going multimodal. The cost of ColBERT remains storage (per-token vectors), so reserve it for precision-critical corpora.</p></div>
+  </section>
+
+  <!-- ============ PART 2: RETRIEVAL ============ -->
+  <section id="r1">
+    <p class="part-label">Part 2 &middot; Retrieval</p>    <h2>Similarity search &amp; top-k</h2>
+    <p>Retrieval is the live half: embed the question with the <em>same</em> model used for indexing (query and documents must share a vector space), run nearest-neighbour search for the top-k chunks, return them with scores and metadata. A key nuance: ANN search optimizes for <strong>recall</strong>, not exact ordering, so it returns a good candidate <em>set</em> in a roughly-right order. That is what motivates reranking. Choosing k is a balance: too small misses the answer; too large floods the prompt with noise and lowers quality. Common pattern: retrieve wide (k = 20 to 50), then rerank down to 3 to 5.</p>
+  </section>
+
+  <section id="r2">
+    <h2>Query translation</h2>
+    <p>A raw, awkwardly-worded question may embed far from the document that answers it. Query translation rewrites it <em>before</em> searching. Five canonical techniques, all still standard in 2026:</p>
+
+    <h3>Multi-Query</h3>
+    <p>Ask an LLM to rewrite the question several ways from different angles, retrieve for each, and take the unique union. Firing from many directions raises the odds one phrasing lands near the right document.</p>
+    <pre data-lang="python"><code class="language-python">prompt = ChatPromptTemplate.from_template(
+    "Generate 5 reworded versions of this question, one per line.\nQuestion: {q}")
+generate = prompt | llm | StrOutputParser() | (lambda x: x.split("\n"))
+docs = unique_union([d for q in generate.invoke({"q": question}) for d in retriever.invoke(q)])</code></pre>
+
+    <h3>RAG Fusion</h3>
+    <p>Multi-Query with a smarter merge: combine the per-variant result lists with <span class="def" tabindex="0">Reciprocal Rank Fusion<span class="bubble"><span class="label">definition</span><b>RRF.</b> Merges several ranked lists into one. Each item scores the sum of 1/(k + rank) across the lists it appears in (k around 60). Items ranked high in many lists float to the top. Works on rank position, so it needs no score calibration.</span></span> (RRF) instead of a plain union. Documents ranked high across several variants get boosted, producing one clean ranking you can confidently truncate.</p>
+    <pre data-lang="python"><code class="language-python">def rrf(result_lists, k=60):
+    scores = {}
+    for docs in result_lists:
+        for rank, doc in enumerate(docs):
+            scores[doc] = scores.get(doc, 0) + 1 / (k + rank)
+    return sorted(scores, key=scores.get, reverse=True)</code></pre>
+
+    <h3>Decomposition</h3>
+    <p>Break a complex, multi-part question into sub-questions and solve each. Roots: Google's <em>least-to-most</em> prompting and <em>IR-CoT</em>, which interleaves retrieval with <span class="def" tabindex="0">chain-of-thought<span class="bubble"><span class="label">definition</span>Prompting a model to show step-by-step reasoning before its final answer, which improves performance on multi-step problems.</span></span> reasoning. Run sub-questions sequentially (feed each answer into the next) when they depend on each other, or in parallel then concatenate when independent. This is now a core building block of agentic RAG.</p>
+
+    <h3>Step-Back prompting</h3>
+    <p>The opposite of decomposition: generate a <em>more abstract</em> version of the question first, retrieve for both, and combine. Uses a <span class="def" tabindex="0">few-shot<span class="bubble"><span class="label">definition</span>Giving the model a handful of input/output examples in the prompt so it learns the desired pattern before tackling the real input.</span></span> prompt of example question-to-stepback pairs. Shines in domains with conceptual scaffolding (textbooks, technical docs) where grounding in the broad concept helps answer the specific question.</p>
+
+    <h3>HyDE (Hypothetical Document Embeddings)</h3>
+    <p>Questions and documents are different kinds of text, so matching them directly is slightly apples-to-oranges. HyDE asks the LLM to <em>write a hypothetical answer</em>, then embeds that and searches with it; the fake answer reads like the real documents and sits closer to them. "Silly but shockingly effective," strong zero-shot, great for the layman-question / technical-corpus gap. Caution: for questions far outside your corpus the hypothetical can hallucinate and mislead retrieval, so guard the edges.</p>
+    <pre data-lang="python"><code class="language-python">hyde = ChatPromptTemplate.from_template(
+    "Write a short passage answering this question.\nQuestion: {q}")
+hyde_chain = hyde | llm | StrOutputParser() | retriever   # generate fake answer, then retrieve</code></pre>
+  </section>
+
+  <section id="r3">
+    <h2>Routing</h2>
+    <p>Once you have a good query, routing decides where it goes (which store, DB, or prompt). <span class="lead-term">Logical routing</span> hands an LLM descriptions of each source and asks it to return a structured choice via function calling, constrained to your valid options. Think classification plus structured output.</p>
+    <pre data-lang="python"><code class="language-python">from pydantic import BaseModel, Field
+from typing import Literal
+
+class RouteQuery(BaseModel):
+    datasource: Literal["python_docs", "js_docs", "golang_docs"] = Field(
+        ..., description="Pick the most relevant datasource")
+
+router = llm.with_structured_output(RouteQuery)
+router.invoke("How do I use a list comprehension?")   # -> datasource="python_docs"</code></pre>
+    <p><span class="lead-term">Semantic routing</span> is simpler: embed several candidate prompts, embed the question, pick the prompt with highest cosine similarity. The <code>with_structured_output</code> pattern here is the same one that powers every grading step in the self-correcting flows later.</p>
+  </section>
+
+  <section id="r4">
+    <h2>Query construction</h2>
+    <p>Most data lives in structured systems with their own query languages. Query construction converts natural language into them: <strong>text-to-metadata-filters</strong> for vector stores ("videos on chat LangChain published after 2024" becomes a semantic search plus a date filter), <strong>text-to-SQL</strong> for relational DBs, <strong>text-to-Cypher</strong> for graph DBs. Same structured-output trick: describe the available fields as a schema, bind it to the model, get back a query object. This survives the long-context era because you never dump an entire database into a prompt.</p>
+  </section>
+
+  <section id="r5">
+    <h2>Hybrid search</h2>
+    <p>Pure vector search misses exact terms (codes, names, rare jargon). Hybrid search runs vector search <em>and</em> keyword search (BM25) together, then merges, usually with RRF. You get semantic understanding plus exact-match precision. The repeated 2026 advice: start with hybrid retrieval (dense + BM25) and a reranker, and only go more exotic if that is not enough.</p>
+    <pre data-lang="python"><code class="language-python">from langchain.retrievers import EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
+
+bm25 = BM25Retriever.from_texts(documents)          # sparse / keyword
+vector = vectorstore.as_retriever()                 # dense / semantic
+hybrid = EnsembleRetriever(retrievers=[bm25, vector], weights=[0.4, 0.6])</code></pre>
+  </section>
+
+  <section id="r6">
+    <h2>Reranking &amp; multi-stage retrieval</h2>
+    <p>First-stage retrieval (a bi-encoder) is built for speed and recall: it returns a good candidate set in roughly-right order. A <strong>reranker</strong> (a cross-encoder) then reads the query and each candidate <em>together</em> and rescores for true relevance. The production pattern is <strong>multi-stage retrieval</strong>: a funnel that gets progressively more accurate and more expensive as the candidate pool shrinks.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Multi-stage retrieval funnel">
+        <rect x="40" y="30" width="220" height="44" rx="8" class="dg-node"/>
+        <text x="150" y="51" text-anchor="middle" class="dg-label-sm">stage 1 &mdash; bi-encoder / hybrid</text>
+        <text x="150" y="66" text-anchor="middle" class="dg-label-accent">retrieve ~50 (fast, wide)</text>
+        <path d="M150 74 L150 92" class="dg-line" marker-end="url(#ar3)"/>
+        <rect x="70" y="98" width="160" height="44" rx="8" class="dg-node"/>
+        <text x="150" y="119" text-anchor="middle" class="dg-label-sm">stage 2 &mdash; cross-encoder</text>
+        <text x="150" y="134" text-anchor="middle" class="dg-label-accent">rerank to ~10</text>
+        <path d="M150 142 L150 160" class="dg-line" marker-end="url(#ar3)"/>
+        <rect x="120" y="166" width="60" height="40" rx="8" class="dg-accent-soft"/>
+        <text x="150" y="190" text-anchor="middle" class="dg-label-accent">top 3-5</text>
+        <text x="300" y="52" class="dg-label">Wide net first (high recall),</text>
+        <text x="300" y="74" class="dg-label">then an accurate but slow model</text>
+        <text x="300" y="96" class="dg-label">reorders only the shortlist.</text>
+        <text x="300" y="126" class="dg-label-sm">Key rule: N (retrieved) must be</text>
+        <text x="300" y="146" class="dg-label-sm">much larger than K (kept), or the</text>
+        <text x="300" y="166" class="dg-label-sm">reranker has nothing to choose from.</text>
+        <defs><marker id="ar3" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 z" fill="var(--ink-soft)"/></marker></defs>
+      </svg>
+      <figcaption>Multi-stage retrieval: cheap-and-wide, then expensive-and-precise on the shortlist.</figcaption>
+    </figure>
+    <p>Reported gains are large: cross-encoder reranking has been measured boosting precision 18 to 42% over retrieval alone, and it often <em>saves</em> money by sending fewer, better chunks to the LLM. Common 2026 rerankers: Cohere Rerank, Voyage Rerank, open-source BGE-Reranker. (Late-interaction models like ColBERT can also serve as a fast reranking stage.)</p>
+    <pre data-lang="python"><code class="language-python">from sentence_transformers import CrossEncoder
+reranker = CrossEncoder("BAAI/bge-reranker-base")
+candidates = retrieve_wide(question, k=50)                 # N >> K
+scores = reranker.predict([(question, c) for c in candidates])
+top = [c for _, c in sorted(zip(scores, candidates), reverse=True)][:5]</code></pre>
+    <div class="pc">
+      <div class="col pros"><h5>Why rerank</h5><ul>
+        <li>Big precision gain on what reaches the LLM</li>
+        <li>Often cheaper overall (fewer tokens generated)</li>
+        <li>Drop-in: no re-indexing needed</li>
+      </ul></div>
+      <div class="col cons"><h5>Costs</h5><ul>
+        <li>Adds ~50 to 200 ms latency</li>
+        <li>Useless unless you retrieve wide first (N &gt;&gt; K)</li>
+        <li>Another model / API in the stack</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <!-- ============ PART 3: AUGMENTATION ============ -->
+  <section id="a1">
+    <p class="part-label">Part 3 &middot; Augmentation</p>    <h2>Building the prompt</h2>
+    <p>"Augmentation" is mostly string assembly: drop the retrieved chunks into the prompt around the question. The craft is in the instructions.</p>
+    <pre data-lang="python"><code class="language-python">def generate(question, chunks):
+    context = "\n\n".join(chunks)
+    prompt = f"""Use ONLY the context below to answer.
+If the answer is not in the context, say you do not know.
+
+Context:
+{context}
+
+Question: {question}
+Answer:"""
+    return client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}]).choices[0].message.content</code></pre>
+    <ul>
+      <li>Tell the model to answer <strong>only</strong> from the context and to admit when the answer is not there. This is your main defense against hallucination.</li>
+      <li>Include source identifiers so you can show citations.</li>
+      <li>Keep assembled context lean (often under 8K tokens). Always blowing past that means retrieval is too loose: tighten k or your relevance cutoff.</li>
+    </ul>
+  </section>
+
+  <!-- ============ PART 4: GENERATION ============ -->
+  <section id="g1">
+    <p class="part-label">Part 4 &middot; Generation</p>    <h2>The generation step</h2>
+    <p>The LLM reads the assembled prompt and writes the answer. Everything else in RAG exists to make sure the chunks in that prompt are the right ones. To swap models (say from OpenAI to Claude), a framework lets you change one line; the prompt and retrieval stay the same. The remaining frontier is not the single generation call but what you wrap around it.</p>
+  </section>
+
+  <section id="g2">
+    <h2>Self-correcting flows</h2>
+    <p>Naive RAG is a straight line. Real systems need loops and decisions: should I retrieve at all? Are these documents any good? If not, rewrite and retry, or search the web? That pushes you from a <strong>chain</strong> (fixed sequence) to a <strong>flow</strong>, modeled as a state machine of nodes (steps that update a shared state) and conditional edges (branches on what just happened). <strong>LangGraph</strong> is the standard library for this.</p>
+    <pre data-lang="python"><code class="language-python"># a node: state in, state out
+def grade_documents(state):
+    docs = [d for d in state["documents"]
+            if grader.invoke(d, state["question"]) == "yes"]
+    return {**state, "documents": docs, "web_search": len(docs) == 0}
+
+# a conditional edge: choose the next node from state
+def decide(state):
+    return "transform_query" if state["web_search"] else "generate"</code></pre>
+    <figure class="diagram">
+      <svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Self-correcting RAG flow">
+        <rect x="20" y="30" width="92" height="40" rx="8" class="dg-node"/><text x="66" y="55" text-anchor="middle" class="dg-label-sm">question</text>
+        <path d="M112 50 H146" class="dg-line" marker-end="url(#ar4)"/>
+        <rect x="150" y="30" width="92" height="40" rx="8" class="dg-node"/><text x="196" y="55" text-anchor="middle" class="dg-label-sm">retrieve</text>
+        <path d="M242 50 H276" class="dg-line" marker-end="url(#ar4)"/>
+        <rect x="280" y="30" width="100" height="40" rx="8" class="dg-node"/><text x="330" y="55" text-anchor="middle" class="dg-label-sm">grade docs</text>
+        <path d="M380 50 H420" class="dg-line-accent" marker-end="url(#ar4)"/>
+        <text x="392" y="42" class="dg-label-sm">ok</text>
+        <rect x="424" y="30" width="100" height="40" rx="8" class="dg-node"/><text x="474" y="55" text-anchor="middle" class="dg-label-sm">generate</text>
+        <path d="M524 50 H564" class="dg-line-accent" marker-end="url(#ar4)"/>
+        <rect x="568" y="30" width="92" height="40" rx="8" class="dg-accent-soft"/><text x="614" y="55" text-anchor="middle" class="dg-label-sm">answer</text>
+        <!-- weak path -->
+        <path d="M330 70 V120 H196 V108" class="dg-dash" marker-end="url(#ar4)"/>
+        <text x="250" y="138" class="dg-label-sm">weak? rewrite query + web search, retry</text>
+        <rect x="150" y="150" width="180" height="40" rx="8" class="dg-node-soft"/>
+        <text x="240" y="175" text-anchor="middle" class="dg-label-sm">transform query / web search</text>
+        <path d="M196 150 V108" class="dg-dash"/>
+        <!-- hallucination check -->
+        <path d="M474 70 V200 H614 V72" class="dg-dash" marker-end="url(#ar4)"/>
+        <text x="486" y="218" class="dg-label-sm">answer ungrounded? regenerate</text>
+        <defs><marker id="ar4" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 z" fill="var(--ink-soft)"/></marker></defs>
+      </svg>
+      <figcaption>A self-correcting flow grades retrieval and generation, looping back on failure.</figcaption>
+    </figure>
+    <h3>The named patterns</h3>
+    <ul>
+      <li><span class="lead-term">CRAG (Corrective RAG)</span>: grade each retrieved doc; if all are weak, fall back to web search rather than generating from junk.</li>
+      <li><span class="lead-term">Self-RAG</span>: multiple self-checks, should I retrieve, are docs relevant, is the answer grounded (<span class="def" tabindex="0">recency bias<span class="bubble"><span class="label">definition</span>A model's tendency to attend more to tokens near the end of its context, which can hurt recall of facts placed earlier in a long prompt.</span></span> aside: grading is also how you catch hallucinations), does it address the question, looping on failure.</li>
+      <li><span class="lead-term">Adaptive / Agentic RAG</span>: combine query analysis + routing at the front with inline grading in the middle. An agent reasons about whether to retrieve, what to retrieve, and when to stop.</li>
+    </ul>
+    <div class="status"><span class="tag">2026 status</span><p>Agentic RAG is the dominant enterprise pattern, with LangGraph as the standard orchestrator. The honest tradeoff: roughly 3 to 10x the token cost and 2 to 5x the latency of vanilla RAG, mitigated with iteration caps and adaptive routing so simple questions skip the expensive path. Powerful, but not the default for every query.</p></div>
+  </section>
+
+  <!-- ============ PART 5: TOOLING ============ -->
+  <section id="t1">
+    <p class="part-label">Part 5 &middot; Tooling</p>    <h2>Frameworks</h2>
+    <p><strong>LangChain</strong> is an open-source framework giving swappable building blocks (loaders, splitters, embeddings, vector-store wrappers, retrievers, LLM wrappers) plus a way to pipe them together. Swap your embedding model, DB, or LLM by changing roughly one import. Its composition style is <strong>LCEL</strong> (LangChain Expression Language), chaining steps with the <code>|</code> operator. Siblings: <strong>LangGraph</strong> (stateful agentic flows) and <strong>LangSmith</strong> (tracing and evaluation).</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>Option</th><th>Sweet spot</th></tr>
+      <tr><td><strong>LangChain</strong></td><td>General LLM apps; huge integration library; complex pipelines</td></tr>
+      <tr><td><strong>LlamaIndex</strong></td><td>Retrieval-first apps; data-framework defaults feel natural</td></tr>
+      <tr><td><strong>Haystack</strong></td><td>Mature, modular, pipeline-oriented, production-focused</td></tr>
+      <tr><td><strong>LangGraph</strong></td><td>Agentic / cyclic / self-correcting flows</td></tr>
+      <tr><td><strong>No framework</strong></td><td>Learning and simple apps; you see exactly what happens</td></tr>
+    </table></div>
+    <p>For learning: build it once with no framework so you understand every box, then adopt a framework to appreciate what it removes.</p>
+  </section>
+
+  <!-- ============ PART 6: EVALUATION ============ -->
+  <section id="e1">
+    <p class="part-label">Part 6 &middot; Evaluation</p>    <h2>Why &amp; how to test</h2>
+    <p>"It looks fine when I try it" is not measurement, and you cannot improve what you do not measure. Build a small evaluation set of <strong>50 to 200 real questions</strong> early, with the right answer (and ideally the right source documents) for each. That turns RAG tuning from guesswork into engineering. Evaluate retrieval and generation <em>separately</em>, then end-to-end, because a bad answer from good retrieval is a different bug than good answer from lucky retrieval.</p>
+  </section>
+
+  <section id="e2">
+    <h2>Retrieval metrics</h2>
+    <p>These ask: did the right documents come back, and in a good order?</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>Metric</th><th>What it measures</th></tr>
+      <tr><td><strong>Recall@k</strong></td><td>Of all truly relevant docs, the fraction that appear in the top k. The headline retrieval number.</td></tr>
+      <tr><td><strong>Precision@k</strong></td><td>Of the top k returned, the fraction that are actually relevant.</td></tr>
+      <tr><td><strong>Hit rate@k</strong></td><td>Fraction of queries where at least one relevant doc is in the top k.</td></tr>
+      <tr><td><strong>MRR</strong></td><td>Mean Reciprocal Rank: how high up the first relevant doc appears, averaged over queries.</td></tr>
+      <tr><td><strong>NDCG@k</strong></td><td>Rewards putting relevant docs near the <em>top</em>, with graded relevance. The metric to watch when judging a reranker.</td></tr>
+    </table></div>
+    <p>Rule of thumb: tune first-stage retrieval for <strong>recall@k</strong> (get the right docs into the candidate set at all), and tune your reranker for <strong>NDCG@k</strong> (get them ordered correctly).</p>
+  </section>
+
+  <section id="e3">
+    <h2>Generation metrics</h2>
+    <p>These ask: given what was retrieved, is the answer good? The RAGAS framework is the most widely used open-source option, and it scores these with an LLM judge:</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>Metric</th><th>What it measures</th></tr>
+      <tr><td><strong>Faithfulness</strong></td><td>Does the answer make only claims supported by the retrieved context? Your primary hallucination metric.</td></tr>
+      <tr><td><strong>Answer relevance</strong></td><td>Does the answer actually address the question? High faithfulness + low relevance = answered a different question correctly.</td></tr>
+      <tr><td><strong>Context precision / recall</strong></td><td>Did retrieval surface the right context and not a pile of noise?</td></tr>
+      <tr><td><strong>Answer correctness</strong></td><td>Is it factually right vs a ground-truth answer? The most expensive (needs labels).</td></tr>
+    </table></div>
+  </section>
+
+  <section id="e4">
+    <h2>Tools &amp; a ranx example</h2>
+    <p>For the classic information-retrieval metrics (recall@k, NDCG, MRR), <strong>ranx</strong> is a fast, simple Python library: you give it the known-relevant docs (qrels) and your system's ranked results (a run), and it computes everything and even runs significance tests between two systems. For the generation side, reach for <strong>RAGAS</strong>; for tracing and dataset-backed evals in production, <strong>LangSmith</strong> or <strong>Arize Phoenix</strong>.</p>
+    <pre data-lang="python"><code class="language-python">from ranx import Qrels, Run, evaluate
+
+# ground truth: which docs are relevant for each query (1 = relevant)
+qrels = Qrels({"q1": {"docA": 1, "docC": 1}, "q2": {"docB": 1}})
+
+# your retriever's scored results per query
+run = Run({"q1": {"docA": 0.9, "docB": 0.4, "docC": 0.8},
+           "q2": {"docB": 0.7, "docD": 0.2}})
+
+print(evaluate(qrels, run, ["recall@5", "precision@5", "mrr", "ndcg@10"]))
+# -> {'recall@5': 1.0, 'precision@5': 0.5, 'mrr': 1.0, 'ndcg@10': 0.94 ...}</code></pre>
+    <pre data-lang="python"><code class="language-python"># generation side: RAGAS over a dataset of {question, contexts, answer, ground_truth}
+from ragas import evaluate as ragas_eval
+from ragas.metrics import faithfulness, answer_relevancy, context_precision
+print(ragas_eval(dataset, metrics=[faithfulness, answer_relevancy, context_precision]))</code></pre>
+    <p>Workflow that compounds: change one thing (chunk size, k, add a reranker), rerun the eval set, watch the number move. Keep the question set frozen so results are comparable over time.</p>
+  </section>
+
+  <!-- ============ PART 7: PERSPECTIVE ============ -->
+  <section id="p1">
+    <p class="part-label">Part 7 &middot; Perspective</p>    <h2>Long context vs RAG</h2>
+    <p>With million-token context windows, why retrieve at all? Stress tests using a multi-needle-in-a-haystack setup (plant several facts at different depths, ask the model to recover and reason over them) found three things: more facts is harder, reasoning on top of retrieval is harder than plain retrieval, and facts near the <em>start</em> of a long context are recalled worse than those near the end (the <span class="def" tabindex="0">lost-in-the-middle<span class="bubble"><span class="label">definition</span>The observed drop in an LLM's ability to use information located in the middle (and often the start) of a very long context, versus the beginning and end.</span></span> / recency effect).</p>
+    <div class="note">
+      <span class="tag">2026 verdict</span>
+      <p><strong>Naive RAG is dead; RAG is not.</strong> The settled answer is to split by query type: long context (with caching) for "what did we discuss," RAG for precise, cited facts, and GraphRAG or agentic flows for relational, cross-document analysis. Long context nudges toward <em>document-centric</em> RAG (retrieve whole documents, not fragments), but routing, query analysis, and query construction all survive, and contextual / agentic memory is emerging as a complement rather than a replacement.</p>
+    </div>
+  </section>
+
+  <section id="x1">
+    <p class="part-label">Appendix</p>    <h2>Cheat sheet: when to use what</h2>
+    <div class="tbl-wrap"><table>
+      <tr><th>Symptom</th><th>Reach for</th></tr>
+      <tr><td>Retrieval misses exact codes / names</td><td>Hybrid search (dense + BM25)</td></tr>
+      <tr><td>Right docs retrieved but answer is weak</td><td>Reranking (cross-encoder, N &gt;&gt; K)</td></tr>
+      <tr><td>Questions are vague or badly worded</td><td>Query translation (Multi-Query, HyDE)</td></tr>
+      <tr><td>Layman questions vs technical corpus</td><td>HyDE</td></tr>
+      <tr><td>Complex multi-part questions</td><td>Decomposition / agentic RAG</td></tr>
+      <tr><td>Multiple data sources</td><td>Routing (logical / semantic)</td></tr>
+      <tr><td>Answer needs many documents at once</td><td>RAPTOR / GraphRAG</td></tr>
+      <tr><td>Hallucinations in high-stakes answers</td><td>Self-RAG / CRAG grading loops</td></tr>
+      <tr><td>Out-of-domain questions</td><td>CRAG (web-search fallback)</td></tr>
+      <tr><td>Don't know if any change helped</td><td>Build an eval set; measure with ranx + RAGAS</td></tr>
+    </table></div>
+    <p>The throughline of the whole page: do not start exotic. Get naive RAG working, add hybrid + reranking, measure, and add complexity only where the data shows you need it.</p>
+  </section>
+
+  <!-- ============ SOURCES ============ -->
+  <section id="src">
+    <h2>Sources</h2>
+    <h4>Primary course</h4>
+    <ul>
+      <li>Lance Martin, "Learn RAG From Scratch," freeCodeCamp / LangChain (Apr 2024). Code: github.com/langchain-ai/rag-from-scratch</li>
+    </ul>
+    <h4>Overviews, production &amp; architecture</h4>
+    <ul>
+      <li>Atlan, "What Is RAG? How It Works in 2026" &middot; <a href="https://atlan.com/know/what-is-rag/">atlan.com/know/what-is-rag</a></li>
+      <li>Lushbinary, "RAG Production Guide 2026" &middot; <a href="https://lushbinary.com/blog/rag-retrieval-augmented-generation-production-guide/">lushbinary.com</a></li>
+      <li>Starmorph, "RAG Techniques Compared (2026)" &middot; <a href="https://blog.starmorph.com/blog/rag-techniques-compared-best-practices-guide">blog.starmorph.com</a></li>
+      <li>PremAI, "Building Production RAG (2026)" &middot; <a href="https://blog.premai.io/building-production-rag-architecture-chunking-evaluation-monitoring-2026-guide/">blog.premai.io</a></li>
+      <li>"RAG Is Not Dead: Patterns That Work in 2026," DEV &middot; <a href="https://dev.to/young_gao/rag-is-not-dead-advanced-retrieval-patterns-that-actually-work-in-2026-2gbo">dev.to</a></li>
+      <li>"RAG in 2026: Architecture Shifts" &middot; <a href="https://medium.com/@elammarisoufiane/rag-in-2026-architecture-shifts-emerging-patterns-and-what-it-means-for-java-developers-6f2803e39787">medium.com</a></li>
+      <li>"RAG is DEAD?" (long context / agentic memory) &middot; <a href="https://medium.com/@reliabledataengineering/rag-is-dead-and-why-thats-the-best-news-you-ll-hear-all-year-0f3de8c44604">medium.com</a></li>
+    </ul>
+    <h4>Frameworks &amp; query techniques</h4>
+    <ul>
+      <li>Blockchain Council, "LangChain in 2026" &middot; <a href="https://www.blockchain-council.org/ai/langchain-2026-reliable-agents-langchain-rag/">blockchain-council.org</a></li>
+      <li>Zen van Riel, "LangChain vs LlamaIndex in 2026" &middot; <a href="https://zenvanriel.com/ai-engineer-blog/langchain-vs-llamaindex-2026-update/">zenvanriel.com</a></li>
+      <li>Microsoft Learn, "RAG Information-Retrieval Phase" (HyDE, query translation) &middot; <a href="https://learn.microsoft.com/en-us/azure/architecture/ai-ml/guide/rag/rag-information-retrieval">learn.microsoft.com</a></li>
+      <li>"5 Proven Query Translation Techniques," Towards Data Science &middot; <a href="https://towardsdatascience.com/5-proven-query-translation-techniques-to-boost-your-rag-performance-47db12efe971/">towardsdatascience.com</a></li>
+      <li>"Six Advanced Query Transformation Architectures" &middot; <a href="https://www.dmflow.chat/en/blog/rag-query-transformation-guide-6-advanced-architectures">dmflow.chat</a></li>
+    </ul>
+    <h4>Indexing internals, vectors &amp; encoders</h4>
+    <ul>
+      <li>Pinecone, "Nearest Neighbor Indexes for Similarity Search" &middot; <a href="https://www.pinecone.io/learn/series/faiss/vector-indexes/">pinecone.io</a></li>
+      <li>TiDB / PingCAP, "ANN Search: IVF vs HNSW vs PQ" &middot; <a href="https://www.pingcap.com/article/approximate-nearest-neighbor-ann-search-explained-ivf-vs-hnsw-vs-pq/">pingcap.com</a></li>
+      <li>Krunal Kanojiya, "Exact vs Approximate Nearest Neighbor" &middot; <a href="https://krunalkanojiya.com/blog/exact-vs-approximate-nearest-neighbor">krunalkanojiya.com</a></li>
+      <li>Weaviate, "Late Interaction: ColBERT, ColPali, ColQwen" &middot; <a href="https://weaviate.io/blog/late-interaction-overview">weaviate.io</a></li>
+      <li>"Late Interaction: ColBERT to Wholembed v3" (2026) &middot; <a href="https://trilogyai.substack.com/p/late-interaction-colbert-to-wholembed">trilogyai.substack.com</a></li>
+    </ul>
+    <h4>Embeddings, vector DBs &amp; reranking</h4>
+    <ul>
+      <li>Milvus, "Best Embedding Model for RAG 2026" &middot; <a href="https://milvus.io/blog/choose-embedding-model-rag-2026.md">milvus.io</a></li>
+      <li>StackAI, "Best Embedding Models for RAG in 2026" &middot; <a href="https://www.stackai.com/insights/best-embedding-models-for-rag-in-2026-a-comparison-guide">stackai.com</a></li>
+      <li>Firecrawl, "Best Vector Databases in 2026" &middot; <a href="https://www.firecrawl.dev/blog/best-vector-databases">firecrawl.dev</a></li>
+      <li>DataCamp, "Best Vector Databases 2026" &middot; <a href="https://www.datacamp.com/blog/the-top-5-vector-databases">datacamp.com</a></li>
+      <li>Vaibhav Dixit, "Reranking in RAG: Cross-Encoders, Cohere Rerank, FlashRank" &middot; <a href="https://medium.com/@vaibhav-p-dixit/reranking-in-rag-cross-encoders-cohere-rerank-flashrank-c7d40c685f6a">medium.com</a></li>
+    </ul>
+    <h4>Agentic / self-correcting RAG</h4>
+    <ul>
+      <li>"Next-Generation Agentic RAG with LangGraph (2026)" &middot; <a href="https://medium.com/@vinodkrane/next-generation-agentic-rag-with-langgraph-2026-edition-d1c4c068d2b8">medium.com</a></li>
+      <li>"Agentic RAG: The 2026 Production Guide," MarsDevs &middot; <a href="https://www.marsdevs.com/guides/agentic-rag-2026-guide">marsdevs.com</a></li>
+      <li>"10 RAG Architectures in 2026" (Self-RAG, adaptive) &middot; <a href="https://www.techment.com/blogs/rag-architectures-enterprise-use-cases-2026/">techment.com</a></li>
+      <li>"Agentic RAG Explained in 3 Levels," MachineLearningMastery &middot; <a href="https://machinelearningmastery.com/agentic-rag-explained-in-3-levels-of-difficulty/">machinelearningmastery.com</a></li>
+    </ul>
+    <p style="margin-top:1.4em;color:var(--ink-faint);font-size:15px">Tooling docs to bookmark: LangChain (python.langchain.com), Chroma (docs.trychroma.com), OpenAI (platform.openai.com/docs), RAGAS (docs.ragas.io), ranx (amenra.github.io/ranx). Library import paths shift often; verify against current docs before shipping.</p>
+  </section>
+
+  </main>
+</div>
+
+<footer>
+  RAG, A to Z &middot; part of Learning Notes &middot; built from the LangChain course + sources above, checked against practice as of June 2026.<br>
+  Dotted terms are hover/tap definitions. Verify library import paths against current docs before shipping.
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-clike.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
