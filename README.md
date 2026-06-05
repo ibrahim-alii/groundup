@@ -4,9 +4,10 @@ A personal, growing knowledge base where I write from-scratch notes as I learn t
 
 ## Live topics
 
-| Topic | Page | Status |
-|---|---|---|
-| RAG, A to Z | `rag.html` | Live |
+| Topic | Page | 
+|---|---|
+| RAG, A to Z | `rag.html` |
+| CUDA | Coming Soon! |
 
 ## Planned topics
 
@@ -22,16 +23,3 @@ A personal, growing knowledge base where I write from-scratch notes as I learn t
 ├── rag.html          RAG course
 └── README.md
 ```
-
-Pages pull Prism (syntax highlighting) and Google Fonts from CDN — an internet connection is needed on first load.
-
-## Adding a new topic
-
-1. Add an accent block in `styles.css` (`.topic-cuda` already exists as an example; tweak colors for new topics).
-2. Copy `rag.html` → `<topic>.html`, set `<body class="topic-<name>">`, replace the content.
-3. Keep the same TOC and section markup (`<nav class="toc">`, `<section id="...">`) — the sidebar highlighting and scroll behavior work automatically.
-4. Add a `.card` in `index.html`; remove the `soon` class once the page is live.
-
-## Deploy
-
-Push to GitHub and enable Pages (Settings → Pages → Deploy from branch `main`, root `/`). All links are relative so the site works at any subpath.
